@@ -123,7 +123,7 @@ class Output(ipyw.VBox):
         self.listener.start()
 
     def read_error(self,e):
-        self.value =  f"{self.value}<p>**Serial reader crash!\n\n {e}<\p>"
+        self.value =  f"{self.value}<p>**Serial reader crash!\n\n {e}</p>"
     
     def stop(self):
         if self.listener is not None:
