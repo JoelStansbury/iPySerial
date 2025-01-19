@@ -1,5 +1,6 @@
 import time
 import threading
+import sys
 
 from serial import Serial # pyserial
 from serial.tools.list_ports import comports
@@ -7,6 +8,32 @@ from serial.tools.list_ports_common import ListPortInfo
 import ipywidgets as ipyw
 from traitlets import observe, Instance, link, Unicode
 
+UNIX = sys.platform in ["linux", "darwin"]
+WIN = sys.platform == "win"
+
+STYLE = ipyw.HTML("""
+<style>
+.ipyserial-output-textbox-outter {
+    max-height:400px;
+    height: 400px;
+    overflow-x: scroll;
+    flex: end;
+    flex-direction: column-reverse;
+    width: 95%;
+    border: 1px solid black;
+}
+.ipyserial-output-textbox-inner {
+    height: fit-content;
+    p {
+        margin-top: -6px;
+        margin-bottom: -6px;
+    }
+}
+.ipyserial-input {
+    width: 95%;
+}        
+</style>
+""")
 
 class UpdatePorts(threading.Thread):
     """
@@ -35,7 +62,7 @@ class UpdatePorts(threading.Thread):
             while True:
                 self.parent.options = list(comports())
                 time.sleep(self.polling_interval)
-        except e:
+        except Exception as e:
             self.on_error()
             raise e
 
@@ -71,12 +98,17 @@ class SerialReader(threading.Thread):
             raise e
 
 
-class Output(ipyw.Textarea):
+class Output(ipyw.VBox):
+    value = Unicode()
     def __init__(self):
         super().__init__()
 
         self.listener = None
         self.disabled=True
+        outter = ipyw.HTML().add_class("ipyserial-output-textbox-inner")
+        link((outter, "value"),(self, "value"))
+        self.children = [outter]
+        self.add_class("ipyserial-output-textbox-outter")
 
     def start(self, device):
         self.value = ""
@@ -91,14 +123,14 @@ class Output(ipyw.Textarea):
         self.listener.start()
 
     def read_error(self,e):
-        self.value = "**Serial reader crash!\n\n" + e + self.value
+        self.value =  f"{self.value}<p>**Serial reader crash!\n\n {e}<\p>"
     
     def stop(self):
         if self.listener is not None:
             self.listener.stop()
 
-    def pipe(self, msg):
-        self.value = msg + self.value
+    def pipe(self, msg, color="black"):
+        self.value = f"{self.value}<p style='color:{color}'>{msg}</p>"
 
 
 class SerialBridge(ipyw.VBox):
@@ -110,7 +142,7 @@ class SerialBridge(ipyw.VBox):
     pecify Serial Number of a specific board.
     """
 
-    port = Instance(klass="serial.tools.list_ports_common.ListPortInfo")
+    port = Instance(klass="serial.tools.list_ports_common.ListPortInfo", allow_none=True)
     inp = Unicode()
     def __init__(
         self, 
@@ -119,9 +151,11 @@ class SerialBridge(ipyw.VBox):
         serial_number=None,
         auto_connect=False,
         auto_disconnect=True,
-        auto_refresh_ports=True, 
+        auto_refresh_ports=True,
+        eof="\n",
         ):
         self.auto_disconnect = auto_disconnect
+        self.eof=eof
         super().__init__(_view_count=0)
 
         # Port Selector
@@ -173,7 +207,7 @@ class SerialBridge(ipyw.VBox):
         self.is_open = False
 
         self.output_stream = Output()
-        self.input_text_box = ipyw.Text()
+        self.input_text_box = ipyw.Text().add_class("ipyserial-input")
         self.input_text_box.on_submit(self._manual_input)
         link(
             source=(self.input_text_box,"value"),
@@ -182,7 +216,7 @@ class SerialBridge(ipyw.VBox):
         
 
         top = ipyw.HBox(widgets)
-        self.children = [top, self.input_text_box, self.output_stream]
+        self.children = [top, self.output_stream, self.input_text_box, STYLE]
         
         # Settings
         self.refresh_available_ports()
@@ -208,10 +242,10 @@ class SerialBridge(ipyw.VBox):
         )
         if auto_connect:
             self.connect()
-        
-    # @observe("inp")
+
     def _manual_input(self, src):
-        self.device.write(bytes(src.value,"utf-8"))
+        self.device.write(bytes(f"{src.value.upper()}{self.eof}","utf-8"))
+        self.output_stream.pipe(src.value, color="darkgreen")
         src.value=""
         
     def refresh_available_ports(self, _=None):
@@ -226,16 +260,28 @@ class SerialBridge(ipyw.VBox):
 
     def connect(self, port=None, serial_number=None):
         # Use serial number if provided
-        if serial_number:
-            for p in self.port_selector.options:
-                if isinstance(p, ListPortInfo) and p.serial_number==serial_number:
-                    port = p.name
-                    break
-            else:
-                raise LookupError("Serial Number not found")
-        # If this function was initiated by a button click
-        elif not isinstance(serial_number,str):
-            port = self.port_selector.value.name
+        if UNIX:
+            if serial_number:
+                for p in self.port_selector.options:
+                    if isinstance(p, ListPortInfo) and p.serial_number==serial_number:
+                        port = f"/dev/{p.name}"
+                        break
+                else:
+                    raise LookupError("Serial Number not found")
+            # If this function was initiated by a button click
+            elif not isinstance(serial_number,str):
+                port = f"/dev/{self.port_selector.value.name}"
+        elif WIN:
+            if serial_number:
+                for p in self.port_selector.options:
+                    if isinstance(p, ListPortInfo) and p.serial_number==serial_number:
+                        port = p.name
+                        break
+                else:
+                    raise LookupError("Serial Number not found")
+            # If this function was initiated by a button click
+            elif not isinstance(serial_number,str):
+                port = self.port_selector.value.name
         
         if self.device and self.device.is_open:
             self.device.close()
